@@ -182,18 +182,30 @@ class Reverb:
             _Allpass(int(sr * 0.0050), 0.5),
             _Allpass(int(sr * 0.0017), 0.5),
         ]
-        self.predelay = DelayLine(int(sr * 0.1))
+        self.sr = sr
+        # UI allows up to 0.2 s; keep one extra sample of head-room so the
+        # largest fractional delay can still be linearly interpolated.
+        max_predelay_s = max(0.2, predelay_s)
+        self.predelay = DelayLine(int(sr * max_predelay_s) + 2)
+        self.predelay_samples = max(0.0, predelay_s) * sr
         self.predelay_s = predelay_s
         self.wet = wet
         self.dry = dry
 
     def process_block(self, block: Sequence[float]) -> List[float]:
-        predelay_samples = self.predelay_s * 1  # sr unknown per-block; use time directly
+        # Delay the *wet* signal by the pre-delay amount; the dry signal stays
+        # sample-accurate so transients remain tight.
+        delay = min(self.predelay_samples, self.predelay.size - 1)
         out = []
         for x in block:
+            if delay > 0:
+                wet_in = self.predelay.read(delay)
+            else:
+                wet_in = x
+            self.predelay.write(x)
             wet = 0.0
             for c in self.combs:
-                wet += c.process(x)
+                wet += c.process(wet_in)
             wet /= len(self.combs)
             for a in self.allpasses:
                 wet = a.process(wet)
