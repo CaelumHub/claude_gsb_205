@@ -171,6 +171,7 @@ class Reverb:
     def __init__(self, room_size: float = 0.7, damping: float = 0.4,
                  wet: float = 0.3, dry: float = 0.8, predelay_s: float = 0.0,
                  sr: float = 44100):
+        self.sr = sr
         fb = 0.7 + 0.2 * room_size
         self.combs = [
             _Comb(int(sr * 0.0297), fb, damping),
@@ -182,18 +183,27 @@ class Reverb:
             _Allpass(int(sr * 0.0050), 0.5),
             _Allpass(int(sr * 0.0017), 0.5),
         ]
-        self.predelay = DelayLine(int(sr * 0.1))
-        self.predelay_s = predelay_s
+        # One extra slot so the full UI range (0..0.2 s) can be read back
+        # exactly after writing the current sample.
+        max_predelay = int(sr * 0.25) + 2
+        self.predelay = DelayLine(max_predelay)
+        # After writing x[n] the line's cursor sits one slot ahead, so a read
+        # offset of P+1 returns x[n-P] (P=0 -> x[n], i.e. no pre-delay).
+        p = int(predelay_s * sr)
+        self.predelay_read = max(1, min(p + 1, max_predelay - 1))
         self.wet = wet
         self.dry = dry
 
     def process_block(self, block: Sequence[float]) -> List[float]:
-        predelay_samples = self.predelay_s * 1  # sr unknown per-block; use time directly
         out = []
         for x in block:
+            # Pre-delay holds back *only the wet/reverb onset*; the dry signal
+            # passes through untouched.
+            self.predelay.write(x)
+            xd = self.predelay.read(self.predelay_read)
             wet = 0.0
             for c in self.combs:
-                wet += c.process(x)
+                wet += c.process(xd)
             wet /= len(self.combs)
             for a in self.allpasses:
                 wet = a.process(wet)
